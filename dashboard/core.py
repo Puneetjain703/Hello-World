@@ -3,11 +3,14 @@ from __future__ import annotations
 import logging
 import re
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from .citation import CitationManager
 from .search import TrustedSourcesSearcher, SearchResult
 from .status import flag_status, StatusFlag
+from .parser import extract_year_value_pairs
+from .visualization import plot_year_series
+import matplotlib.pyplot as plt
 
 logger = logging.getLogger(__name__)
 
@@ -110,6 +113,53 @@ class Dashboard:
                 if 0 <= pct <= 100:
                     return float(pct)
         return None
+
+    # ---------------------------------------------------------------------
+    # Money flow trends & visualization
+    # ---------------------------------------------------------------------
+    def money_flow_data(
+        self,
+        topic_query: str,
+        start_year: int = 2010,
+        end_year: Optional[int] = None,
+        max_results: int = 25,
+    ) -> Dict[int, float]:
+        """Return aggregated year->value series parsed from trusted sources snippets."""
+        end_year = end_year or datetime.utcnow().year
+        query = f"India {topic_query} investment {start_year}-{end_year}"
+        logger.info("Searching money flow data: %s", query)
+        results = self.searcher.search(query, max_results=max_results)
+        series: Dict[int, List[float]] = {}
+        for res in results:
+            pairs = extract_year_value_pairs(res.snippet + " " + res.title)
+            for year, val in pairs:
+                if year < start_year or year > end_year:
+                    continue
+                series.setdefault(year, []).append(val)
+            # collect citations even if pairs empty
+            self.citations.add(res.url)
+        # Aggregate by taking median value per year to reduce outliers
+        aggregated: Dict[int, float] = {}
+        for year, values in series.items():
+            if values:
+                values_sorted = sorted(values)
+                median_val = values_sorted[len(values) // 2]
+                aggregated[year] = median_val
+        return aggregated
+
+    def money_flow_chart(
+        self,
+        topic_query: str,
+        start_year: int = 2010,
+        end_year: Optional[int] = None,
+    ) -> Tuple[Dict[int, float], "plt.Figure"]:
+        """Convenience method that returns (series, matplotlib Figure)."""
+        series = self.money_flow_data(topic_query, start_year, end_year)
+        if not series:
+            raise ValueError("Could not extract numeric money-flow data from snippets.")
+        title = f"{topic_query.title()} money flow ({start_year}-{end_year or datetime.utcnow().year})"
+        fig = plot_year_series(series, title=title, ylabel="USD million")
+        return series, fig
 
     # ---------------------------------------------------------------------
     # Rendering
